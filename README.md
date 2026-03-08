@@ -13,7 +13,7 @@
 ‎## 🛠️ Installation
 ‎```bash
 ‎# Clone the repository
-‎git clone [https://github.com/YOUR_USERNAME/PriViScanner.git](https://github.com/YOUR_USERNAME/PriViScanner.git)
+git clone.....
 ‎cd PriViScanner
 ‎
 ‎# Install dependencies
