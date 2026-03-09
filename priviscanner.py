@@ -5,269 +5,192 @@ import requests
 import re
 import sys
 import nmap
-import urllib3
-import time
 import whois
+import urllib3
+import threading
+import time
+import dns.resolver
 from urllib.parse import urlparse
 from datetime import datetime
 from colorama import Fore, Style, init
-from tqdm import tqdm
+from fpdf import FPDF
 
 # Suppress SSL warnings
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 init(autoreset=True)
 
+# ─────────────────────────────────────────────
+#  VISUALS: LOADING ANIMATION (Pulse HUD)
+# ─────────────────────────────────────────────
+
+stop_animation = False
+
+def loading_animation(task_name):
+    chars = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+    idx = 0
+    while not stop_animation:
+        sys.stdout.write(f"\r{Fore.YELLOW}[{chars[idx % len(chars)]}] {Fore.WHITE}Tactical Objective: {task_name}...")
+        sys.stdout.flush()
+        idx += 1
+        time.sleep(0.1)
+    sys.stdout.write("\r" + " " * 85 + "\r")
+
+# ─────────────────────────────────────────────
+#  PDF REPORT ENGINE (PriViSecurity 🛡️)
+# ─────────────────────────────────────────────
+
+class PriViReport(FPDF):
+    def header(self):
+        self.set_font('Arial', 'B', 15)
+        self.cell(0, 10, 'PriViSecurity - Full Spectrum Recon Report', 0, 1, 'C')
+        self.set_font('Arial', 'I', 10)
+        self.cell(0, 5, 'Security Architect: Prince Ubebe', 0, 1, 'C')
+        self.ln(10)
+
+def generate_pdf_report(report_data, domain):
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    safe_domain = domain.replace('.', '_')
+    filename = f"privireport_{safe_domain}_{timestamp}.pdf"
+
+    try:
+        pdf = PriViReport()
+        pdf.add_page()
+        
+        pdf.set_font('Arial', 'B', 12)
+        pdf.cell(0, 10, "1. Target & Organization Intelligence", 0, 1)
+        pdf.set_font('Arial', '', 10)
+        pdf.cell(0, 7, f"Organization: {report_data['whois'].get('org', 'REDACTED')}", 0, 1)
+        pdf.cell(0, 7, f"Registrar: {report_data['whois'].get('registrar', 'Unknown')}", 0, 1)
+        pdf.cell(0, 7, f"WAF Status: {report_data['waf']}", 0, 1)
+        pdf.cell(0, 7, f"IP/Geo: {report_data['ip']} ({report_data['geo']})", 0, 1)
+        pdf.ln(5)
+
+        pdf.set_font('Arial', 'B', 12)
+        pdf.cell(0, 10, "2. DNS Infrastructure", 0, 1)
+        pdf.set_font('Arial', '', 9)
+        for record in report_data['dns_records']: pdf.cell(0, 6, f"- {record}", 0, 1)
+        pdf.ln(5)
+
+        pdf.set_font('Arial', 'B', 12)
+        pdf.cell(0, 10, "3. Scraped Intel & Vulnerabilities", 0, 1)
+        pdf.set_font('Arial', '', 9)
+        pdf.multi_cell(0, 6, f"Emails: {', '.join(report_data['emails']) if report_data['emails'] else 'None'}")
+        for v in report_data['vulns']:
+            pdf.set_text_color(220, 50, 50)
+            pdf.multi_cell(0, 6, f"[CRITICAL] {v}")
+            pdf.set_text_color(0,0,0)
+
+        pdf.output(filename)
+        return filename
+    except Exception as e:
+        print(Fore.RED + f"[-] PDF Error: {e}")
+        return None
+
+# ─────────────────────────────────────────────
+#  TACTICAL OPERATIONS
+# ─────────────────────────────────────────────
 
 def banner():
-    print(Fore.RED + Style.BRIGHT + """
-    ██████╗ ██████╗ ██╗██╗ ██╗██╗███████╗ ██████╗ █████╗ ███╗ ██╗███╗ ██╗███████╗██████╗ 
-    ██╔══██╗██╔══██╗██║██║ ██║██║██╔════╝██╔════╝██╔══██╗████╗ ██║████╗ ██║██╔════╝██╔══██╗
-    ██████╔╝██████╔╝██║██║ ██║██║███████╗██║ ███████║██╔██╗ ██║██╔██╗ ██║█████╗ ██████╔╝
-    ██╔═══╝ ██╔══██╗██║╚██╗ ██╔╝██║╚════██║██║ ██╔══██║██║╚██╗██║██║╚██╗██║██╔══╝ ██╔══██╗
-    ██║ ██║ ██║██║ ╚████╔╝ ██║███████║╚██████╗██║ ██║██║ ╚████║██║ ╚████║███████╗██║ ██║
-    ╚═╝ ╚═╝ ╚═╝╚═╝ ╚═══╝ ╚═╝╚══════╝ ╚═════╝╚═╝ ╚═╝╚═╝ ╚═══╝╚═╝ ╚═══╝╚══════╝╚═╝ ╚═╝
+    print(Fore.RED + Style.BRIGHT + r"""
+    ██████╗ ██████╗ ██╗██╗   ██╗██╗███████╗ ██████╗ █████╗ ███╗   ██╗███╗   ██╗███████╗██████╗ 
+    ██╔══██╗██╔══██╗██║██║   ██║██║██╔════╝██╔════╝██╔══██╗████╗  ██║████╗  ██║██╔════╝██╔══██╗
+    ██████╔╝██████╔╝██║██║   ██║██║███████╗██║     ███████║██╔██╗ ██║██╔██╗ ██║█████╗  ██████╔╝
+    ██╔═══╝ ██╔══██╗██║╚██╗ ██╔╝██║╚════██║██║     ██╔══██║██║╚██╗██║██║╚██╗██║██╔══╝  ██╔══██╗
+    ██║     ██║  ██║██║ ╚████╔╝ ██║███████║╚██████╗██║  ██║██║ ╚████║██║ ╚████║███████╗██║  ██║
+    ╚═╝     ╚═╝  ╚═╝╚═╝  ╚═══╝  ╚═╝╚══════╝ ╚═════╝╚═╝  ╚═╝╚═╝  ╚═══╝╚═╝  ╚═══╝╚══════╝╚═╝  ╚═╝
     """ + Style.RESET_ALL)
-    print(Fore.YELLOW + " Advanced OSINT & Vulnerability Reconnaissance Framework")
-    print(Fore.YELLOW + " Developed by Privis Creative Studio")
-    print(Fore.YELLOW + " -------------------------------------------------------\n")
+    print(Fore.YELLOW + "    " + "═" * 80)
+    print(Fore.WHITE + Style.BRIGHT + f"    BRAND NAME : {Fore.CYAN}PriViSecurity 🛡️")
+    print(Fore.WHITE + Style.BRIGHT + f"    DEVELOPER  : {Fore.GREEN}Prince Ubebe")
+    print(Fore.YELLOW + "    " + "═" * 80 + "\n")
 
+def main():
+    global stop_animation
+    if len(sys.argv) != 2:
+        print(Fore.RED + "Usage: sudo python3 priviscanner.py <target>"); sys.exit(1)
 
-def update_objective(step_name, status="RUNNING"):
+    domain = urlparse(sys.argv[1] if "://" in sys.argv[1] else "http://" + sys.argv[1]).netloc or sys.argv[1]
+    report_data = {'ip': None, 'geo': 'Unknown', 'whois': {}, 'emails': [], 'subdomains': [], 'ports': [], 'vulns': [], 'waf': 'None Detected', 'dns_records': []}
+
+    banner()
+
+    # PHASE 1: TARGET & ORGANIZATION IDENTIFICATION
+    stop_animation = False
+    threading.Thread(target=loading_animation, args=("Organization & WHOIS Recon",)).start()
     try:
-        if status == "RUNNING":
-            print(Fore.CYAN + Style.BRIGHT + f"\n[>>] CURRENT OBJECTIVE: {step_name}...")
-        elif status == "SUCCESS":
-            print(Fore.GREEN + Style.BRIGHT + f"[+] OBJECTIVE COMPLETE: {step_name}")
-            print(Fore.YELLOW + "-------------------------------------------------------")
-        elif status == "FAILED":
-            print(Fore.RED + Style.BRIGHT + f"[!] OBJECTIVE FAILED: {step_name}")
-            print(Fore.YELLOW + "-------------------------------------------------------")
-    except UnicodeEncodeError:
-        if status == "RUNNING":
-            print(f"\n[>>] CURRENT OBJECTIVE: {step_name}...")
-        elif status == "SUCCESS":
-            print(f"[+] OBJECTIVE COMPLETE: {step_name}")
-        elif status == "FAILED":
-            print(f"[!] OBJECTIVE FAILED: {step_name}")
-
-
-def techy_progress(task_name, duration=1.5):
-    print(Fore.MAGENTA + f" [~] Initializing {task_name}...")
-    for _ in tqdm(range(50), desc=" Loading", ascii=" #",
-                  bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt}", leave=False):
-        time.sleep(duration / 50)
-
-
-def whois_lookup(domain, report_data):
-    """Perform WHOIS lookup. Returns True on success, False on failure."""
-    try:
+        report_data['ip'] = socket.gethostbyname(domain)
         w = whois.whois(domain)
-        created = w.creation_date
-        expires = w.expiration_date
-        if isinstance(created, list):
-            created = created[0]
-        if isinstance(expires, list):
-            expires = expires[0]
-        registrar = w.registrar[0] if isinstance(w.registrar, list) else w.registrar
-        org = w.org[0] if isinstance(w.org, list) else w.org
-        result = (
-            f"Registrar : {registrar}\n"
-            f"Created : {created}\n"
-            f"Expires : {expires}\n"
-            f"Org : {org}"
-        )
-        print(Fore.GREEN + f" [+] WHOIS data retrieved:\n{result}")
-        report_data['whois'] = result
-        # FIX #1: Now returns True so caller can conditionally fire SUCCESS.
-        return True
-    except Exception as e:
-        print(Fore.YELLOW + f" [-] WHOIS lookup failed: {e}")
-        report_data['whois'] = f"Failed: {e}"
-        return False
+        report_data['whois'] = {'registrar': w.registrar, 'creation_date': w.creation_date, 'org': w.org}
+        geo_res = requests.get(f"https://ip-api.com/json/{report_data['ip']}", timeout=5).json()
+        if geo_res.get('status') == 'success':
+            report_data['geo'] = f"{geo_res['country']}, {geo_res['city']} ({geo_res['isp']})"
+    finally:
+        stop_animation = True; time.sleep(0.5)
 
+    print(Fore.CYAN + f"[>>] CURRENT OBJECTIVE: Target Identification ...")
+    print(Fore.GREEN + f"    [+] ORGANIZATION : {report_data['whois']['org']}")
+    print(Fore.GREEN + f"    [+] REGISTRAR    : {report_data['whois']['registrar']}")
+    print(Fore.GREEN + f"    [+] TARGET IP    : {report_data['ip']} ({report_data['geo']})")
 
-def waf_detection(url, report_data):
-    """Detect WAF. Returns True on success, False on network failure."""
-    waf_signatures = {
-        'Cloudflare': ['__cfduid', 'cf-ray', 'cloudflare'],
-        'Incapsula': ['visid_incap', 'incap_ses', 'x-iinfo'],
-        'Akamai': ['akamai-origin-hop', 'aka-ghost', 'x-akamai'],
-        'ModSecurity': ['mod_security', 'modsecurity'],
-        'F5 BIG-IP': ['x-waf-status', 'bigipserver'],
-    }
+    # PHASE 2: PERIMETER CHECK (WAF)
+    print(Fore.CYAN + f"\n[>>] CURRENT OBJECTIVE: Perimeter Check (WAF) ...")
+    stop_animation = False
+    threading.Thread(target=loading_animation, args=("Firewall Detection",)).start()
     try:
-        response = requests.get(url, timeout=10, verify=False, allow_redirects=True)
-        headers = str(response.headers).lower()
-        cookies = str(response.cookies).lower()
-        detected = [
-            waf for waf, sigs in waf_signatures.items()
-            if any(s.lower() in headers or s.lower() in cookies for s in sigs)
-        ]
-        if detected:
-            for waf in detected:
-                print(Fore.RED + f" [!] WAF DETECTED: {waf}")
-            report_data['waf'] = ', '.join(detected)
-        else:
-            print(Fore.GREEN + " [+] No WAF detected (Direct Access).")
-            report_data['waf'] = "None"
-        # FIX #2: Returns True so caller can conditionally fire SUCCESS.
-        return True
-    except requests.exceptions.RequestException as e:
-        print(Fore.RED + f" [-] WAF detection failed: {e}")
-        report_data['waf'] = f"Error: {e}"
-        return False
+        req = requests.get(f"http://{domain}", timeout=5)
+        waf_headers = ['x-powered-by', 'server', 'x-sucuri-id', 'cf-ray']
+        for header in waf_headers:
+            if header in req.headers:
+                report_data['waf'] = f"Detected ({req.headers.get(header)})"
+                break
+        print(Fore.GREEN + f"    [+] WAF STATUS   : {report_data['waf']}")
+    finally:
+        stop_animation = True; time.sleep(0.5)
 
+    # PHASE 3: DNS RESOLUTION
+    print(Fore.CYAN + f"\n[>>] CURRENT OBJECTIVE: DNS Resolution ...")
+    stop_animation = False
+    threading.Thread(target=loading_animation, args=("Record Enumeration",)).start()
+    try:
+        for r_type in ['MX', 'NS', 'TXT']:
+            try:
+                answers = dns.resolver.resolve(domain, r_type)
+                for rdata in answers:
+                    val = f"{r_type}: {rdata.to_text()}"
+                    report_data['dns_records'].append(val)
+                    print(Fore.GREEN + f"    [+] {val}")
+            except: continue
+    finally:
+        stop_animation = True; time.sleep(0.5)
 
-def subdomain_enumeration(domain, report_data):
-    """Enumerate subdomains. Returns True always; found count indicates results."""
-    common_subs = ['www', 'mail', 'ftp', 'dev', 'test', 'admin', 'api', 'vpn']
-    found = []
-    for sub in tqdm(common_subs, desc=" DNS Lookup", ascii=" ."):
-        try:
-            ip = socket.gethostbyname(f"{sub}.{domain}")
-            tqdm.write(Fore.GREEN + f" [+] Found: {sub}.{domain} ({ip})")
-            found.append(f"{sub}.{domain} ({ip})")
-        except socket.gaierror:
-            continue
-    report_data['subdomains'] = found
-    if not found:
-        print(Fore.YELLOW + " [-] No subdomains found.")
-    return True
-
-
-def deep_scan(ip, report_data):
-    """Run nmap vuln scan. Returns True on success, False on error."""
-    # FIX #3: nmap.PortScanner() initialised BEFORE techy_progress so if nmap
-    # is missing, it raises immediately with a clear error instead of running
-    # the cosmetic progress bar first and then crashing.
+    # PHASE 4: EVASION SCAN
+    print(Fore.CYAN + f"\n[>>] CURRENT OBJECTIVE: Stealth Vuln-Engine ...")
+    stop_animation = False
+    threading.Thread(target=loading_animation, args=("Nmap Evasion Mode",)).start()
     try:
         nm = nmap.PortScanner()
-    except nmap.PortScannerError as e:
-        print(Fore.RED + f" [-] Nmap not available: {e}")
-        return False
-
-    techy_progress("Nmap Vuln-Engine")
-
-    try:
-        scan_type = '-sS' if os.geteuid() == 0 else '-sT'
-        if scan_type == '-sT':
-            print(Fore.YELLOW + " [~] Not root — using -sT (TCP connect) instead of -sS (SYN).")
-
-        # FIX #9: Restored full port coverage from previous version.
-        # Ports 25,53,110,143,3389,8443 were dropped — these cover SMTP, DNS,
-        # POP3, IMAP, RDP and alt-HTTPS which are common attack surfaces.
-        nm.scan(ip, arguments=f'{scan_type} -sV --script vuln '
-                               f'-p 21,22,25,53,80,110,143,443,445,3306,3389,8080,8443 -T4')
-        scan_found = False
+        evasion_args = '-sV -f -D RND:5 --data-length 20 --version-intensity 3 -T4 --script vuln'
+        nm.scan(report_data['ip'], arguments=f'{evasion_args} -p 21,22,80,443,3306')
         for host in nm.all_hosts():
             for proto in nm[host].all_protocols():
                 for port in sorted(nm[host][proto].keys()):
-                    scan_found = True
                     pinfo = nm[host][proto][port]
-                    res = f"Port {port}/{proto} ({pinfo['name']}) is {pinfo['state']}"
-                    print(Fore.GREEN + f" [+] {res}")
-                    report_data['ports'].append(res)
+                    print(Fore.GREEN + f"    [+] Port {port}/{proto} is {pinfo['state']}")
                     if 'script' in pinfo:
-                        for s_name, s_out in pinfo['script'].items():
-                            v = f" [!] {s_name}: {s_out.strip().splitlines()[0]}"
-                            print(Fore.RED + v)
-                            report_data['ports'].append(v)
-        if not scan_found:
-            print(Fore.YELLOW + " [-] No open ports found in scanned range.")
-        return True
-    except nmap.PortScannerError as e:
-        print(Fore.RED + f" [-] Nmap error (installed? running as root?): {e}")
-        return False
-    except Exception as e:
-        print(Fore.RED + f" [-] Scan Error: {e}")
-        return False
+                        for s_id in pinfo['script']:
+                            report_data['vulns'].append(f"Port {port}: {s_id}")
+                            print(Fore.RED + f"      [!] VULN FOUND: {s_id}")
+    finally:
+        stop_animation = True; time.sleep(0.5)
 
-
-def main():
-    banner()
-    if len(sys.argv) != 2:
-        print(Fore.RED + "Usage: sudo python3 priviscanner.py <target>")
-        sys.exit(1)
-
-    url_in = sys.argv[1]
-
-    # urlparse() called once, result stored and reused.
-    normalized = url_in if "://" in url_in else "http://" + url_in
-    parsed = urlparse(normalized)
-    domain = parsed.netloc or parsed.path
-
-    if not domain:
-        print(Fore.RED + "[-] Invalid Domain")
-        sys.exit(1)
-
-    report_data = {
-        'ip': None,
-        'whois': '',
-        'leaks': [],
-        'ports': [],
-        'dorks': [],
-        'waf': '',
-        'subdomains': []
-    }
-
-    # STEP 1: RESOLUTION
-    update_objective("Target Identification")
-    try:
-        report_data['ip'] = socket.gethostbyname(domain)
-        print(Fore.GREEN + f" [+] Locked: {domain} ({report_data['ip']})")
-        update_objective("Target Identification", "SUCCESS")
-    except socket.gaierror as e:
-        print(Fore.RED + f"[-] DNS Failure: {e}")
-        sys.exit(1)
-
-    # FIX #4: Added None guard before deep_scan. If the DNS step above
-    # somehow completes without setting ip (shouldn't happen, but defensive),
-    # passing None to nmap produces a cryptic error instead of a clear message.
-    if report_data['ip'] is None:
-        print(Fore.RED + "[-] IP resolution produced no result. Aborting.")
-        sys.exit(1)
-
-    # STEP 2: WHOIS — FIX #1: Check return value, fire FAILED if lookup failed.
-    update_objective("WHOIS Reconnaissance")
-    whois_ok = whois_lookup(domain, report_data)
-    update_objective("WHOIS Reconnaissance", "SUCCESS" if whois_ok else "FAILED")
-
-    # STEP 3: WAF — FIX #2: Check return value, fire FAILED on network error.
-    update_objective("Perimeter Check (WAF)")
-    waf_ok = waf_detection(url_in, report_data)
-    update_objective("Perimeter Check (WAF)", "SUCCESS" if waf_ok else "FAILED")
-
-    # STEP 4: SUBDOMAINS
-    update_objective("Infrastructure Mapping")
-    subdomain_enumeration(domain, report_data)
-    update_objective("Infrastructure Mapping", "SUCCESS")
-
-    # STEP 5: DEEP SCAN
-    update_objective("Vulnerability Assessment")
-    scan_ok = deep_scan(report_data['ip'], report_data)
-    update_objective("Vulnerability Assessment", "SUCCESS" if scan_ok else "FAILED")
-
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-    # FIX #7: Tightened services regex to only match port result lines
-    # (which follow the pattern "Port NNN/proto (service) is state"),
-    # preventing vuln script output parentheses from polluting the service list.
-    port_lines = [p for p in report_data['ports'] if p.strip().startswith('Port')]
-    services = list(set(re.findall(r'\((\w+)\)', ' '.join(port_lines))))
-
-    print(Fore.CYAN + Style.BRIGHT + "\n[*] MISSION COMPLETE.")
-    print(Fore.YELLOW + f" Completed : {timestamp}")
-    print(Fore.YELLOW + f" WAF : {report_data['waf']}")
-    print(Fore.YELLOW + f" Subdomains : {len(report_data['subdomains'])}")
-    print(Fore.YELLOW + f" Ports : {len(report_data['ports'])}")
-    print(Fore.YELLOW + f" Services : {', '.join(services) if services else 'none'}")
-
+    # PHASE 5: REPORTING
+    print(Fore.CYAN + "\n[>>] COMPILING FINAL REPORT...")
+    report_file = generate_pdf_report(report_data, domain)
+    if report_file: print(Fore.GREEN + Style.BRIGHT + f"[+] MISSION SUCCESS: {report_file} generated.")
+    print(Fore.YELLOW + Style.BRIGHT + f"\n[*] ALL OBJECTIVES MET. PriViSecurity 🛡️ STANDING BY.")
 
 if __name__ == "__main__":
-    try:
-        main()
-    except KeyboardInterrupt:
-        print(Fore.YELLOW + "\n[!] Aborted.")
-        sys.exit(0)
-
-
+    if os.geteuid() != 0:
+        print(Fore.RED + "[!] Error: Requires sudo for stealth features."); sys.exit(1)
+    main()
+    
