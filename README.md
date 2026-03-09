@@ -23,4 +23,5 @@ git clone.....
 ‎sudo apt install nmap 
 
 # Install dependencies
-sudo pip3 install python-nmap requests colorama tqdm python-whois--break-systems-packages
+sudo pip3 install requests colorama python-nmap fpdf --break-system-packages
+
