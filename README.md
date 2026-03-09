@@ -25,3 +25,12 @@ git clone.....
 # Install dependencies
 sudo pip3 install requests colorama python-nmap fpdf --break-system-packages
 
+
+---
+
+## 🛡️ About the Developer
+
+**Prince Ubebe** *Entry-Level Cybersecurity Professional | Network Security Engineer | Educator* Based in Lagos, Nigeria.
+
+**Disclaimer**: This tool is for educational and authorized security auditing purposes only.
+
